@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "npind"
+version = "0.1.0"
+description = "High-performance NumPy indexing powered by Numba"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "SibanGon", email = "your.email@example.com" }]
+keywords = ["numpy", "numba", "indexing", "performance"]
+
+dependencies = ["numpy >= 1.21.0", "numba >= 0.56.0"]
+
+[project.optional-dependencies]
+dev = ["pytest >= 7.0", "black", "isort", "matplotlib"]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
