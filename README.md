@@ -60,8 +60,8 @@ npind は、特に大規模データにおいて標準の NumPy や素の Numba 
 
 | メソッド名      | 開発ステータス |
 | :-------------- | -------------: |
-| take            | `@njit` 対応中 |
-| take_along_axis |                |
+| take            |              ○ |
+| take_along_axis |         対応中 |
 | choose          |                |
 | compress        |                |
 | select          |                |

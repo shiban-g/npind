@@ -1,3 +1,4 @@
+import numba as nb
 import numpy as np
 import pytest
 
@@ -88,7 +89,7 @@ class TestTakeEdgeCases:
         a = np.arange(5)
         indices = np.array([1, 6])  # 6 is out of bounds
 
-        with pytest.raises(IndexError):
+        with pytest.raises(nb.errors.NumbaIndexError):
             npi.take(a, indices, mode=mode, axis=0)
 
 
@@ -176,3 +177,104 @@ class TestMultidimensionalAndStrides:
         np.testing.assert_array_equal(out_view, expected)
         # Verify if the original reference is maintained (or written back correctly)
         assert result is out_view
+
+
+class TestTakeInJit:
+    def test_jit_normal_take(self):
+        """1次元配列に対する基本的な機能テスト（JIT内）"""
+
+        @nb.njit
+        def jit_func(a, indices):
+            return npi.take(a, indices)
+
+        a = np.array([10, 20, 30, 40, 50])
+        indices = np.array([0, 1, 4])
+        expected = np.take(a, indices)
+
+        result = jit_func(a, indices)
+        np.testing.assert_array_equal(result, expected)
+
+    def test_jit_take_with_axis(self):
+        """axisを指定した場合の多次元配列のテスト（JIT内）"""
+
+        @nb.njit
+        def jit_func(a, indices, axis):
+            return npi.take(a, indices, axis=axis)
+
+        a = np.arange(12).reshape(3, 4)
+        indices = np.array([2, 0, 1])
+
+        # axis = 1
+        expected_ax1 = np.take(a, indices, axis=1)
+        result_ax1 = jit_func(a, indices, 1)
+        np.testing.assert_array_equal(result_ax1, expected_ax1)
+
+        # axis = 0
+        expected_ax0 = np.take(a, indices, axis=0)
+        result_ax0 = jit_func(a, indices, 0)
+        np.testing.assert_array_equal(result_ax0, expected_ax0)
+
+    def test_jit_out_is_provided(self):
+        """out引数を提供した場合のテスト（JIT内）"""
+
+        @nb.njit
+        def jit_func(a, indices, out):
+            return npi.take(a, indices, out=out)
+
+        a = np.array([10, 20, 30, 40, 50])
+        indices = np.array([0, 1, 4])
+        # Numba内で out を使い回すため、事前に確保して渡す
+        out = np.zeros_like(indices)
+
+        expected = np.take(a, indices)
+        result = jit_func(a, indices, out)
+
+        np.testing.assert_array_equal(result, expected)
+        np.testing.assert_array_equal(out, expected)
+        # Numba の関数越しでも元のバッファが書き換えられているか確認
+
+    def test_jit_multidim_indices(self):
+        """indicesが多次元配列の場合のテスト（JIT内）"""
+
+        @nb.njit
+        def jit_func(a, indices, axis):
+            return npi.take(a, indices, axis=axis)
+
+        a = np.arange(24).reshape(2, 3, 4)
+        indices = np.array([[0, 1], [1, 0]])
+
+        expected = np.take(a, indices, axis=2)
+        result = jit_func(a, indices, 2)
+
+        np.testing.assert_array_equal(result, expected)
+        assert result.shape == expected.shape
+
+    def test_jit_parallel_execution(self):
+        """呼び出し側が parallel=True の場合のテスト"""
+
+        # ユーザーが並列ループ内で使った場合や、JIT環境で並列化をオンにした場合を想定
+        @nb.njit(parallel=True)
+        def jit_func_parallel(a, indices, axis):
+            return npi.take(a, indices, axis=axis)
+
+        a = np.arange(24).reshape(2, 3, 4)
+        indices = np.array([2, 0, 1])
+        expected = np.take(a, indices, axis=1)
+
+        result = jit_func_parallel(a, indices, 1)
+        np.testing.assert_array_equal(result, expected)
+
+    def test_jit_out_of_bounds(self):
+        """インデックスが範囲外の場合のエラーテスト（JIT内）"""
+
+        @nb.njit
+        def jit_func(a, indices):
+            return npi.take(a, indices)
+
+        a = np.arange(5)
+        indices = np.array([1, 6])  # 6 は範囲外
+
+        # Numba の実行時エラーは Python 側でラップされるため、
+        # 汎用的な Exception でキャッチするか、より具体的なエラー型を指定します
+        with pytest.raises(Exception):
+            jit_func(a, indices)
