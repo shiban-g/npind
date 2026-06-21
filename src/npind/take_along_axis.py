@@ -1,4 +1,3 @@
-from types import NoneType
 from typing import Optional, SupportsIndex
 
 import numba as nb
@@ -8,13 +7,10 @@ from numba.extending import overload, register_jitable
 from numpy import typing as npt
 
 from .utils import (
-    OMIT_OR_NONE_TYPES,
-    check_indices_bounds,
+    OMIT_OR_NONE,
     may_share_memory,
     modify_axis,
-    replace_items,
-    type_check,
-    unravel_index,
+    raise_if_outside,
 )
 
 
@@ -41,40 +37,48 @@ def _check_out_shape(indices, out):
 
 def _take_along_axis_kernel(a, indices, axis, out):
     axis = modify_axis(axis, a.ndim)
-    check_indices_bounds(indices, a.shape[axis])
+
+    a = np.swapaxes(a, 0, axis)
+    indices = np.swapaxes(indices, 0, axis)
+    out = np.swapaxes(out, 0, axis)
 
     out_buf = out
     if may_share_memory(a, out) or may_share_memory(indices, out):
         out_buf = np.empty_like(out)
 
-    for i in nb.prange(indices.size):
-        # If "+ 0" is missing, the following error occurs
-        #
-        # UnsupportedRewriteError: Failed in nopython mode pipeline (step: convert to parfors)
-        # Overwrite of parallel loop index
-        idx = unravel_index(i + 0, indices.shape)
-        a_idx = replace_items(idx, indices[idx], axis)
-        out_buf[idx] = a[a_idx]
+    bound = a.shape[0]
+    for idx in nb.pndindex(indices.shape):
+        i = raise_if_outside(indices[idx], bound)
+        out_buf[idx] = a[(i,) + idx[1:]]
 
     if out is not out_buf:
         out[...] = out_buf
 
 
-def _take_along_axis_kernel_1d(a, indices, out):
-    check_indices_bounds(indices, a.size)
-
+def _take_along_axis_kernel_1d_noncontiguous(a, indices, out):
     out_buf = out
     if may_share_memory(a, out) or may_share_memory(indices, out):
         out_buf = np.empty_like(out)
 
-    if a.flags.c_contiguous:
-        b = a.ravel()
-        for i in nb.prange(indices.size):
-            out_buf[i] = b[indices[i]]
-    else:
-        for i in nb.prange(indices.size):
-            idx = unravel_index(indices[i], a.shape)
-            out_buf[i] = a[idx]
+    bound = a.size
+    for idx in nb.prange(indices.size):
+        i = raise_if_outside(indices[idx], bound)
+        out_buf[idx] = a.flat[i]
+
+    if out is not out_buf:
+        out[...] = out_buf
+
+
+def _take_along_axis_kernel_1d_contiguous(a, indices, out):
+    out_buf = out
+    if may_share_memory(a, out) or may_share_memory(indices, out):
+        out_buf = np.empty_like(out)
+
+    bound = a.size
+    b = a.ravel()
+    for idx in nb.prange(indices.size):
+        i = raise_if_outside(indices[idx], bound)
+        out_buf[idx] = b[i]
 
     if out is not out_buf:
         out[...] = out_buf
@@ -86,11 +90,20 @@ _take_along_axis_kernel_inline = nb.njit(
 _take_along_axis_kernel_cached_parallel = nb.njit(
     _take_along_axis_kernel, boundscheck=False, cache=True, parallel=True
 )
-_take_along_axis_kernel_1d_inline = nb.njit(
-    _take_along_axis_kernel_1d, boundscheck=False, inline="always"
+_take_along_axis_kernel_1d_contiguous_inline = nb.njit(
+    _take_along_axis_kernel_1d_contiguous, boundscheck=False, inline="always"
 )
-_take_along_axis_kernel_1d_cached_parallel = nb.njit(
-    _take_along_axis_kernel_1d, boundscheck=False, cache=True, parallel=True
+_take_along_axis_kernel_1d_contiguous_cached_parallel = nb.njit(
+    _take_along_axis_kernel_1d_contiguous, boundscheck=False, cache=True, parallel=True
+)
+_take_along_axis_kernel_1d_noncontiguous_inline = nb.njit(
+    _take_along_axis_kernel_1d_noncontiguous, boundscheck=False, inline="always"
+)
+_take_along_axis_kernel_1d_noncontiguous_cached_parallel = nb.njit(
+    _take_along_axis_kernel_1d_noncontiguous,
+    boundscheck=False,
+    cache=True,
+    parallel=True,
 )
 
 
@@ -98,8 +111,8 @@ def take_along_axis(
     a: npt.ArrayLike,
     indices: npt.ArrayLike,
     axis: Optional[int] = None,
-    out: Optional[np.ndarray] = None,
-) -> np.ndarray:
+    out: Optional[npt.NDArray] = None,
+) -> npt.NDArray:
     """
     Take values from the input array by matching 1d index and data slices.
 
@@ -188,30 +201,45 @@ def take_along_axis(
     array([[30],
            [60]])
     """
-    a: np.ndarray = np.asanyarray(a)
-    indices: np.ndarray = np.asanyarray(indices)
+    a: npt.NDArray = np.asanyarray(a)
+    indices: npt.NDArray = np.asanyarray(indices)
 
     if out is not None:
         out: np.ndarray = np.asanyarray(out)
     if not np.issubdtype(indices.dtype, np.integer):
         raise TypeError(f"{indices.dtype=} must be subdtype of np.integer")
 
-    if type_check((axis, out), (NoneType, NoneType)):
+    if (axis is None) and (out is None) and a.flags.c_contiguous:
         _check_indices_1d(indices)
         out = np.empty(indices.shape, dtype=a.dtype)
-        _take_along_axis_kernel_1d_cached_parallel(a, indices, out)
+        _take_along_axis_kernel_1d_contiguous_cached_parallel(a, indices, out)
         return out
-    if type_check((axis, out), (NoneType, np.ndarray)):
+
+    if (axis is None) and (out is None) and (not a.flags.c_contiguous):
+        _check_indices_1d(indices)
+        out = np.empty(indices.shape, dtype=a.dtype)
+        _take_along_axis_kernel_1d_noncontiguous_cached_parallel(a, indices, out)
+        return out
+
+    if (axis is None) and isinstance(out, np.ndarray) and a.flags.c_contiguous:
         _check_indices_1d(indices)
         _check_out_shape(indices, out)
-        _take_along_axis_kernel_1d_cached_parallel(a, indices, out)
+        _take_along_axis_kernel_1d_contiguous_cached_parallel(a, indices, out)
         return out
-    if type_check((axis, out), (SupportsIndex, NoneType)):
+
+    if (axis is None) and isinstance(out, np.ndarray) and (not a.flags.c_contiguous):
+        _check_indices_1d(indices)
+        _check_out_shape(indices, out)
+        _take_along_axis_kernel_1d_noncontiguous_cached_parallel(a, indices, out)
+        return out
+
+    if isinstance(axis, SupportsIndex) and (out is None):
         _check_shapes(a, indices, axis)
         out = np.empty(indices.shape, dtype=a.dtype)
         _take_along_axis_kernel_cached_parallel(a, indices, axis, out)
         return out
-    if type_check((axis, out), (SupportsIndex, np.ndarray)):
+
+    if isinstance(axis, SupportsIndex) and isinstance(out, np.ndarray):
         _check_shapes(a, indices, axis)
         _check_out_shape(indices, out)
         _take_along_axis_kernel_cached_parallel(a, indices, axis, out)
@@ -232,27 +260,63 @@ def overload_take_along_axis(a, indices, axis=None, out=None):
     if isinstance(out, nbt.Optional):
         out = out.type
 
-    if type_check((axis, out), (OMIT_OR_NONE_TYPES, OMIT_OR_NONE_TYPES)):
+    if (
+        isinstance(axis, OMIT_OR_NONE)
+        and isinstance(out, OMIT_OR_NONE)
+        and (a.layout == "C")
+    ):
 
         def impl(a, indices, axis=None, out=None):
             _check_indices_1d(indices)
             result = np.empty(indices.shape, dtype=a.dtype)
-            _take_along_axis_kernel_1d_inline(a, indices, result)
+            _take_along_axis_kernel_1d_contiguous_inline(a, indices, result)
             return result
 
         return impl
 
-    if type_check((axis, out), (OMIT_OR_NONE_TYPES, nbt.Array)):
+    if (
+        isinstance(axis, OMIT_OR_NONE)
+        and isinstance(out, OMIT_OR_NONE)
+        and (a.layout != "C")
+    ):
+
+        def impl(a, indices, axis=None, out=None):
+            _check_indices_1d(indices)
+            result = np.empty(indices.shape, dtype=a.dtype)
+            _take_along_axis_kernel_1d_noncontiguous_inline(a, indices, result)
+            return result
+
+        return impl
+
+    if (
+        isinstance(axis, OMIT_OR_NONE)
+        and isinstance(out, nbt.Array)
+        and (a.layout == "C")
+    ):
 
         def impl(a, indices, axis=None, out=None):
             _check_indices_1d(indices)
             _check_out_shape(indices, out)
-            _take_along_axis_kernel_1d_inline(a, indices, out)
+            _take_along_axis_kernel_1d_contiguous_inline(a, indices, out)
             return out
 
         return impl
 
-    if type_check((axis, out), (nbt.Integer, OMIT_OR_NONE_TYPES)):
+    if (
+        isinstance(axis, OMIT_OR_NONE)
+        and isinstance(out, nbt.Array)
+        and (a.layout != "C")
+    ):
+
+        def impl(a, indices, axis=None, out=None):
+            _check_indices_1d(indices)
+            _check_out_shape(indices, out)
+            _take_along_axis_kernel_1d_noncontiguous_inline(a, indices, out)
+            return out
+
+        return impl
+
+    if isinstance(axis, nbt.Integer) and isinstance(out, OMIT_OR_NONE):
 
         def impl(a, indices, axis=None, out=None):
             _check_shapes(a, indices, axis)
@@ -262,7 +326,7 @@ def overload_take_along_axis(a, indices, axis=None, out=None):
 
         return impl
 
-    if type_check((axis, out), (nbt.Integer, nbt.Array)):
+    if isinstance(axis, nbt.Integer) and isinstance(out, nbt.Array):
 
         def impl(a, indices, axis=None, out=None):
             _check_shapes(a, indices, axis)

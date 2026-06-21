@@ -14,7 +14,7 @@ keywords = ["numpy", "numba", "indexing", "performance"]
 dependencies = ["numpy >= 1.21.0", "numba >= 0.56.0"]
 
 [project.optional-dependencies]
-dev = ["pytest >= 7.0", "black", "isort", "matplotlib"]
+dev = ["pytest >= 7.0", "black", "isort", "matplotlib", "ipykernel"]
 
 [tool.setuptools]
 package-dir = { "" = "src" }

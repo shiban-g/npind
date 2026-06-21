@@ -2,6 +2,7 @@
 .env/
 .numba_cache/
 benchmarks/results/
+uv.lock
 
 # The following is copied from https://github.com/github/gitignore/blob/main/Python.gitignore
 

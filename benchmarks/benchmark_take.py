@@ -3,6 +3,7 @@ import time
 
 import numba as nb
 import numpy as np
+import numpy.typing as npt
 
 import npind as npi
 
@@ -60,7 +61,7 @@ def nb_take(a, indeces, axis):
     return np.take(a, indeces, axis)
 
 
-def benchmark(a: np.ndarray, indeces: np.ndarray, axis, out: np.ndarray):
+def benchmark(a: npt.NDArray, indeces: npt.NDArray, axis, out: npt.NDArray):
     n_trials = 1000
 
     nb_take(a, indeces, axis=axis)

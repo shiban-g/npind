@@ -1,28 +1,50 @@
 from types import NoneType
 
-import numpy as np
+import numba as nb
+import numpy.typing as npt
 from numba import types as nbt
 from numba.extending import register_jitable
 
-OMIT_OR_NONE_TYPES = (nbt.Omitted, nbt.NoneType, NoneType)
-
-
-def type_check(variablea, types):
-    return all(isinstance(v, t) for v, t in zip(variablea, types))
+OMIT_OR_NONE = (nbt.Omitted, nbt.NoneType, NoneType)
 
 
 @register_jitable(nopython=True)
-def rollaxis(a: np.ndarray, n: int):
-    axes = a.shape
-    for i in range(a.ndim):
-        axes = axes[1:] + (i,)
-    for i in range(n):
-        axes = axes[1:] + axes[:1]
-    return a.transpose(axes)
+def check_clipmode(mode):
+    if mode not in ("raise", "wrap", "clip"):
+        raise ValueError("mode must be one of 'clip', 'raise', or 'wrap'")
 
 
 @register_jitable(nopython=True)
-def may_share_memory(a, b):
+def check_out_shape(array: npt.NDArray, shape: tuple):
+    if array.shape != shape:
+        raise ValueError("shape of out-array does not match result")
+
+
+@nb.njit(inline="always")
+def raise_if_outside(index: int, bound: int) -> int:
+    if 0 <= index < bound:
+        return index
+    raise IndexError("indices are out of bounds")
+
+
+@nb.njit(inline="always")
+def wrap_if_outside(index: int, bound: int) -> int:
+    if 0 <= index < bound:
+        return index
+    return index % bound
+
+
+@nb.njit(inline="always")
+def clip_if_outside(index: int, bound: int) -> int:
+    if index < 0:
+        return 0
+    if bound <= index:
+        return bound - 1
+    return index
+
+
+@register_jitable(nopython=True)
+def may_share_memory(a: npt.NDArray, b: npt.NDArray) -> bool:
     a_ptr = a.ctypes.data
     b_ptr = b.ctypes.data
 
@@ -30,16 +52,6 @@ def may_share_memory(a, b):
         max(zip(a.strides, a.shape)) if a_ptr <= b_ptr else max(zip(b.strides, b.shape))
     )
     return abs(a_ptr - b_ptr) < st * sh
-
-
-@register_jitable(nopython=True)
-def check_indices_bounds(indices, length):
-    if indices.size == 0:
-        return
-    min_ = indices.min()
-    max_ = indices.max()
-    if not (0 <= min_ <= max_ < length):
-        raise IndexError("indices are out of bounds")
 
 
 @register_jitable(nopython=True)
@@ -82,24 +94,15 @@ def replace_item_with_tuple(target_tuple, replacement_tuple, index):
 
 
 @register_jitable(nopython=True)
-def replace_items(target_tuple, replacement, index):
-    """
-    Replaces the element at index in `target_tuple` with `replacement`.
+def rollaxis(a: npt.NDArray, n: int) -> npt.NDArray:
+    if n == 0:
+        return a
 
-    >>> replace_item_with_tuple((1, 2, 3), 4, 1)
-    (1, 4, 3)
-    """
-    return replace_item_with_tuple(target_tuple, (replacement,), index)
-
-
-@register_jitable(nopython=True)
-def unravel_index(flat_index, shape):
-    """
-    A Numba-jitable equivalent of numpy.unravel_index.
-    Converts a flat index into a tuple of coordinate arrays.
-    Only 'C' order is supported.
-    """
-    for _ in range(len(shape)):
-        flat_index, i = divmod(flat_index, shape[-1])
-        shape = (i,) + shape[:-1]
-    return shape
+    axes = a.shape
+    for i in range(a.ndim):
+        axes = axes[1:] + (i,)
+    if n > 0:
+        axes = rotate_left(axes, n)
+    if n < 0:
+        axes = rotate_right(axes, -n)
+    return a.transpose(axes)

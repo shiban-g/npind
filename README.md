@@ -62,7 +62,7 @@ We are currently expanding the library with multi-threaded implementations of th
 | ----------------- | --------- |
 | `take`            | Completed |
 | `take_along_axis` | Completed |
-| `choose`          | WIP       |
+| `choose`          | Completed |
 | `compress`        |           |
 | `select`          |           |
 | `place`           |           |
