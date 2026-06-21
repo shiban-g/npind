@@ -7,30 +7,16 @@ from numba import types as nbt
 from numba.extending import overload, register_jitable
 from numpy import typing as npt
 
-
-def type_check(variablea, types):
-    return all(isinstance(v, t) for v, t in zip(variablea, types))
-
-
-@register_jitable(nopython=True)
-def get_result_shape(a_shape, i_shape, axis):
-    for _ in range(axis):
-        a_shape = a_shape[1:] + a_shape[:1]
-    result_shape = i_shape + a_shape[1:]
-    for _ in range(axis):
-        result_shape = result_shape[-1:] + result_shape[:-1]
-    return result_shape
-
-
-@register_jitable(nopython=True)
-def may_share_memory(a, b):
-    a_ptr = a.ctypes.data
-    b_ptr = b.ctypes.data
-
-    st, sh = (
-        max(zip(a.strides, a.shape)) if a_ptr <= b_ptr else max(zip(b.strides, b.shape))
-    )
-    return abs(a_ptr - b_ptr) < st * sh
+from .utils import (
+    OMIT_OR_NONE_TYPES,
+    check_indices_bounds,
+    may_share_memory,
+    modify_axis,
+    replace_item_with_tuple,
+    rollaxis,
+    type_check,
+    unravel_index,
+)
 
 
 @register_jitable(nopython=True)
@@ -38,41 +24,23 @@ def _modify_indices(indices, length, mode):
     if mode is None:
         return indices
 
-    if (mode == "raise") and (indices.size > 0):
-        min_ = indices.min()
-        max_ = indices.max()
-        if not (0 <= min_ <= max_ < length):
-            raise nb.errors.NumbaIndexError("index out of bounds")
+    if mode == "raise":
+        check_indices_bounds(indices, length)
 
     if mode == "warp":
         indices = indices % length
 
     if mode == "clip":
-        indices = indices.clip(0, length - 1)
+        np.clip(indices, 0, length - 1, out=indices)
     return indices
 
 
-@register_jitable(nopython=True)
-def _modify_axis(axis, ndim):
-    if not (0 <= axis < ndim):
-        raise nb.errors.NumbaIndexError(
-            f"must be -ndim <= axis < ndim, but axis={axis}"
-        )
-    if axis < 0:
-        axis += ndim
-    return axis
-
-
 def _take_kernel(a, indices, axis, out, mode):
-    axis = _modify_axis(axis, a.ndim)
+    axis = modify_axis(axis, a.ndim)
     indices = _modify_indices(indices, a.shape[axis], mode)
 
-    for i in range(axis, 0, -1):
-        a = np.swapaxes(a, i, i - 1)
-
-    for i in range(indices.ndim):
-        for j in range(axis, 0, -1):
-            out = np.swapaxes(out, i + j, i + j - 1)
+    a = rollaxis(a, axis)
+    out = rollaxis(out, axis)
 
     out_buf = out
     if may_share_memory(a, out) or may_share_memory(indices, out):
@@ -104,7 +72,8 @@ def _take_kernel_1d(a, indices, out, mode):
             out_buf[idx] = b[indices[idx]]
     else:
         for idx in nb.pndindex(indices.shape):
-            out_buf[idx] = a.flat[indices[idx]]
+            a_idx = unravel_index(indices[idx], a.shape)
+            out_buf[idx] = a[a_idx]
 
     if out is not out_buf:
         out[...] = out_buf
@@ -186,34 +155,24 @@ def take(
         return out
     if type_check((axis, out), (NoneType, np.ndarray)):
         if out.shape != indices.shape:
-            raise TypeError("array shape not matched")
+            raise TypeError("shape of out-array does not match result of take")
         _take_kernel_1d_cached_parallel(a, indices, out, mode)
         return out
     if type_check((axis, out), (SupportsIndex, NoneType)):
-        result_shape = get_result_shape(a.shape, indices.shape, axis)
+        result_shape = replace_item_with_tuple(a.shape, indices.shape, axis)
         out = np.empty(result_shape, dtype=a.dtype)
         _take_kernel_cached_parallel(a, indices, axis, out, mode)
         return out
     if type_check((axis, out), (SupportsIndex, np.ndarray)):
-        expected_shape = get_result_shape(a.shape, indices.shape, axis)
+        expected_shape = replace_item_with_tuple(a.shape, indices.shape, axis)
         if out.shape != expected_shape:
-            raise TypeError("array shape not matched")
+            raise TypeError("shape of out-array does not match result of take")
         _take_kernel_cached_parallel(a, indices, axis, out, mode)
         return out
 
     raise TypeError(
         f"{type(out).__name__=} must be None or Array. {type(axis).__name__=} must be None or int"
     )
-
-
-def normalize_arg(axis):
-    if isinstance(axis, nbt.Omitted):
-        axis = axis.value
-    if isinstance(axis, nbt.Optional):
-        axis = axis.type
-    if isinstance(axis, nbt.NoneType):
-        axis = None
-    return axis
 
 
 @overload(take, inline="always")
@@ -224,12 +183,11 @@ def overload_take(a, indices, axis=None, out=None, mode="raise"):
         out = out.type
 
     if not isinstance(a, nbt.Array):
-        raise nb.errors.TypingError(f"{type(a).__name__=} must be Array")
+        raise TypeError(f"{type(a).__name__=} must be Array")
     if not isinstance(indices, nbt.Array):
-        raise nb.errors.TypingError(f"{type(indices).__name__=} must be Array")
+        raise TypeError(f"{type(indices).__name__=} must be Array")
 
-    omit_or_none = (nbt.Omitted, nbt.NoneType ,NoneType)
-    if type_check((axis, out), (omit_or_none, omit_or_none)):
+    if type_check((axis, out), (OMIT_OR_NONE_TYPES, OMIT_OR_NONE_TYPES)):
 
         def impl(a, indices, axis=None, out=None, mode="raise"):
             out = np.empty(indices.shape, dtype=a.dtype)
@@ -237,21 +195,21 @@ def overload_take(a, indices, axis=None, out=None, mode="raise"):
             return out
 
         return impl
-    if type_check((axis, out), (omit_or_none, nbt.Array)):
+    if type_check((axis, out), (OMIT_OR_NONE_TYPES, nbt.Array)):
 
         def impl(a, indices, axis=None, out=None, mode="raise"):
             expected_shape = indices.shape
             if out.shape != expected_shape:
-                raise nb.errors.TypingError("array shape not matched")
+                raise TypeError("shape of out-array does not match result of take")
 
             _take_kernel_1d_inline(a, indices, out, mode)
             return out
 
         return impl
-    if type_check((axis, out), (nbt.Integer, omit_or_none)):
+    if type_check((axis, out), (nbt.Integer, OMIT_OR_NONE_TYPES)):
 
         def impl(a, indices, axis=None, out=None, mode="raise"):
-            result_shape = get_result_shape(a.shape, indices.shape, axis)
+            result_shape = replace_item_with_tuple(a.shape, indices.shape, axis)
             out = np.empty(result_shape, dtype=a.dtype)
             _take_kernel_inline(a, indices, axis, out, mode)
             return out
@@ -260,14 +218,14 @@ def overload_take(a, indices, axis=None, out=None, mode="raise"):
     if type_check((axis, out), (nbt.Integer, nbt.Array)):
 
         def impl(a, indices, axis=None, out=None, mode="raise"):
-            expected_shape = get_result_shape(a.shape, indices.shape, axis)
+            expected_shape = replace_item_with_tuple(a.shape, indices.shape, axis)
             if out.shape != expected_shape:
-                raise nb.errors.TypingError("array shape not matched")
+                raise TypeError("shape of out-array does not match result of take")
 
             _take_kernel_inline(a, indices, axis, out, mode)
             return out
 
         return impl
-    raise nb.errors.TypingError(
+    raise TypeError(
         f"{type(out)=} must be None or Array. {type(axis)=} must be None or int"
     )

@@ -1,106 +1,101 @@
-# Npind(numpy-parallel-indexer)
+# Npind (numpy-parallel-indexer)
 
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/version-0.1.0--alpha-orange)](https://semver.org/)
 
-**Npind** は、[NumPy](https://numpy.org/ja/) のインデックス操作を高速化するライブラリです。
-複雑なインデックス操作は Numpy を用いた処理のボトルネックとなりえます。
-Npind が開発された理由は、このボトルネックを緩和し Numpy の能力をより引き出すためです。
+**Npind** is a high-performance Python library engineered to drastically accelerate [NumPy](https://numpy.org/)'s index manipulation routines. 
 
-Npind が高速である理由は、[Numba](https://numba.pydata.org/) により並列処理を行っているためです。
-Npind は、Numba の高速な for ループをラップし、Numpy 互換の簡潔な API を提供します。
-Numba は、Numba で未だサポートされていない Numpy メソッドを実装します(特に```numpy.take``` の ```out``` 引数！)。
+While contiguous arithmetic operations (e.g., `np.add`) are inherently optimized via hardware SIMD instructions and execute incredibly fast, complex index lookups fundamentally bypass SIMD capabilities. Consequently, indexing operations frequently act as severe single-threaded bottlenecks in NumPy-based data pipelines. Npind was developed specifically to eliminate these bottlenecks and unlock the maximum processing power of the CPU.
 
-## 1. Npind の特徴
+Leveraging [Numba](https://numba.pydata.org/)'s multi-threading backend, Npind provides parallelized indexing operations through a clean, NumPy-compatible API. It serves as a seamless drop-in replacement, entirely abstracting away the boilerplate nested `for`-loops often required when writing custom Numba kernels.
 
-- **NumPy 互換**: NumPy の簡潔な API を引き継ぐ。
-- **最小限の依存関係**: Pythonコードのみで構成される。依存ライブラリは Numpy と Numba のみ。
-- **低オーバーヘッド**: インプレース演算をサポートし、動的メモリ確保を最小限抑える。
-- **インデキシングに特化**: インデックス操作に注力することで、パフォーマンスを追求する。
+## 1. Key Features
 
-## 2. インストール
+- **NumPy-Compatible API**: Inherits NumPy's intuitive interface for seamless integration as a drop-in replacement.
+- **Minimal Dependencies**: Pure Python implementation relying strictly on `numpy` and `numba`.
+- **Low Overhead Memory Management**: Natively supports in-place operations (via `out` arguments) to rigorously suppress dynamic memory allocations.
+- **Laser-Focused on Indexing**: Dedicated exclusively to overcoming the architectural performance limits of array indexing.
 
-インストール:
+## 2. Installation
+
+Install via source:
 
 ```bash
 git clone https://github.com/ShibanGon/npind.git
 cd npind
 pip install -e ".[dev]"
-``` 
+```
 
-アンインストール
+To uninstall:
 
 ```bash
 pip uninstall npind
 ```
 
-## 3. 使い方
+## 3. Quick Start
 
-``` python
+```python
 import numpy as np
 import npind as npi
 
 a = np.random.rand(10000, 10000)
 indices = [0, 500, 999]
 
+# High-performance parallel indexing
 result = npi.take(a, indices, axis=1)
 ```
-### 3.1. ベンチマーク結果
 
-npind は、特に大規模データにおいて標準の NumPy や素の Numba 実装を上回るパフォーマンスを発揮します 。詳細な計測条件は [benchmark.py](./benchmarks/benchmark_take.py) を参照してください 。
+### 3.1. Benchmarks
+
+Npind significantly outperforms both standard NumPy and naive Numba implementations, demonstrating massive speedups particularly in large-scale data processing. For detailed measurement environments and conditions, please refer to [benchmark.py](https://www.google.com/search?q=./benchmarks/benchmark_take.py).
 
 <img src="./assets/benchmark_result.png" width="1000pt">
 
-## 4. 開発ロードマップと実装状況
+## 4. Development Roadmap & Status
 
-現在、以下の関数の並列実装および `out` 引数による最適化を順次進めています。
+We are currently expanding the library with multi-threaded implementations of the following routines, meticulously optimizing each with `out` arguments for zero-allocation execution.
 
 [Indexing routines](https://numpy.org/doc/stable/reference/routines.indexing.html)
 
-| メソッド名      | 開発ステータス |
-| :-------------- | -------------: |
-| take            |              ○ |
-| take_along_axis |         対応中 |
-| choose          |                |
-| compress        |                |
-| select          |                |
-| place           |                |
-| put             |                |
-| putmask         |                |
+| Method Name       | Status    |
+| ----------------- | --------- |
+| `take`            | Completed |
+| `take_along_axis` | Completed |
+| `choose`          | WIP       |
+| `compress`        |           |
+| `select`          |           |
+| `place`           |           |
+| `put`             |           |
+| `putmask`         |           |
 
 [Sort, search, and count](https://numpy.org/doc/stable/reference/routines.sort.html)
 
-
-| メソッド名    | 開発ステータス |
-| :------------ | -------------: |
-| argsort       |                |
-| partition     |                |
-| argpartition  |                |
-| argwhere      |                |
-| nonzero       |                |
-| flatnonzero   |                |
-| where         |                |
-| searchsorted  |                |
-| extract       |                |
-| count_nonzero |                |
+| Method Name     | Status |
+| --------------- | ------ |
+| `argsort`       |        |
+| `partition`     |        |
+| `argpartition`  |        |
+| `argwhere`      |        |
+| `nonzero`       |        |
+| `flatnonzero`   |        |
+| `where`         |        |
+| `searchsorted`  |        |
+| `extract`       |        |
+| `count_nonzero` |        |
 
 [Statistics](https://numpy.org/doc/stable/reference/routines.statistics.html)
 
-| メソッド名 | 開発ステータス |
-| :--------- | -------------: |
-| digitize   |                |
+| Method Name | Status |
+| ----------- | ------ |
+| `digitize`  |        |
 
 [Indexing on ndarrays](https://numpy.org/doc/stable/user/basics.indexing.html)
-| メソッド名                    | 開発ステータス |
-| :---------------------------- | -------------: |
-| numpy.ndarray.\_\_getitem\_\_ |                |
 
+| Method Name                 | Status |
+| --------------------------- | ------ |
+| `numpy.ndarray.__getitem__` |        |
 
-### 4.1. 現在の制限事項 (Current Limitations)
+## 5. License
 
-- **Numba 内での直接呼び出し**: 現時点では `npi.take` を他の `@njit` 関数の中から直接呼び出すことはできません。将来のアップデートで `numba.extending.overload` への対応を予定しています。
-- **データ型**: 現在は数値型の配列を主にサポートしています。オブジェクト型の配列には対応していません。
-
-## 5. ライセンス
 MIT License

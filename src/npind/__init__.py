@@ -1,3 +1,4 @@
-from .core import take
+from .take import take
+from .take_along_axis import take_along_axis
 
-__all__ = ["take"]
+__all__ = ["take", "take_along_axis"]

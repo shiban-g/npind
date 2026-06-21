@@ -9,7 +9,6 @@ description = "High-performance NumPy indexing powered by Numba"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "SibanGon", email = "your.email@example.com" }]
 keywords = ["numpy", "numba", "indexing", "performance"]
 
 dependencies = ["numpy >= 1.21.0", "numba >= 0.56.0"]

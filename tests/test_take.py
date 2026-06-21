@@ -89,7 +89,7 @@ class TestTakeEdgeCases:
         a = np.arange(5)
         indices = np.array([1, 6])  # 6 is out of bounds
 
-        with pytest.raises(nb.errors.NumbaIndexError):
+        with pytest.raises(IndexError):
             npi.take(a, indices, mode=mode, axis=0)
 
 
@@ -276,5 +276,5 @@ class TestTakeInJit:
 
         # Numba の実行時エラーは Python 側でラップされるため、
         # 汎用的な Exception でキャッチするか、より具体的なエラー型を指定します
-        with pytest.raises(Exception):
+        with pytest.raises(IndexError):
             jit_func(a, indices)
