@@ -21,9 +21,15 @@ def broadcast_shape(
     a: npt.NDArray, choices: tuple[npt.NDArray, ...]
 ) -> tuple[int, ...]:
     shape = a.shape
-    for i in range(len(choices)):
-        shape = np.broadcast_shapes(shape, choices[i].shape)
-    return shape
+    return _broadcast_shape_helper(shape, choices)
+
+
+@register_jitable(nopython=True)
+def _broadcast_shape_helper(shape, choices):
+    shape = np.broadcast_shapes(shape, choices[0].shape)
+    if len(choices) == 1:
+        return shape
+    return _broadcast_shape_helper(shape, choices[1:])
 
 
 @register_jitable(nopython=True)
@@ -53,20 +59,17 @@ def _broadcast_arrays_helper(
 
 
 @register_jitable(nopython=True)
-def to_tuple(*typed_list):
-    # Hack. It is best not to use this.
-    # Be sure to include a note in the API docstring advising against using lists.
-    return typed_list
+def _may_share_memory_choose(a, choices, out):
+    result = may_share_memory(a, out)
+    return result or _may_share_memory_chelper(choices, out)
 
 
 @register_jitable(nopython=True)
-def _may_share_memory_choose(a, choices, out):
-    result = may_share_memory(a, out)
-    for i in range(len(choices)):
-        if result:
-            break
-        result |= may_share_memory(choices[i], out)
-    return result
+def _may_share_memory_chelper(choices, out):
+    result = may_share_memory(choices[0], out)
+    if len(choices) == 1:
+        return result
+    return result or _may_share_memory_chelper(choices[1:], out)
 
 
 def _choose_kernel_array(a, choices, out, mode):
@@ -79,7 +82,7 @@ def _choose_kernel_array(a, choices, out, mode):
     choices = np.broadcast_to(choices, shape)
 
     out_buf = out
-    if _may_share_memory_choose(a, choices, out):
+    if may_share_memory(a, out) or may_share_memory(a, choices):
         out_buf = np.empty_like(out)
 
     if mode == "raise":
@@ -131,13 +134,21 @@ def _choose_kernel_homo(a, choices, out, mode):
         out[...] = out_buf
 
 
-@nb.njit(inline="always")
+@nb.njit
 def _hetero_loop_inside(choices, out_buf, tup_idx, arr_idx):
-    i = 0
-    for choice in nb.literal_unroll(choices):
-        if i == tup_idx:
-            out_buf[arr_idx] = choice[arr_idx]
-        i += 1
+    # Hack. I wanted to use `literal_unroll`, but I couldn't resolve the error.
+
+    # i = 0
+    # for choice in nb.literal_unroll(choices):
+    #     if i == tup_idx:
+    #         out_buf[arr_idx] = choice[arr_idx]
+    #     i += 1
+    if len(choices) == 0:
+        return
+    if tup_idx == 0:
+        out_buf[arr_idx] = choices[0][arr_idx]
+        return
+    _hetero_loop_inside(choices[1:], out_buf, tup_idx - 1, arr_idx)
 
 
 def _choose_kernel_hetero(a, choices, out, mode):
@@ -221,24 +232,45 @@ def choose(
         _choose_kernel_array_cached_parallel(a, choices, out, mode)
         return out
 
-    if isinstance(choices, Sequence) and isinstance(out, np.ndarray):
+    if (
+        isinstance(choices, Sequence)
+        and (not have_same_dtypes(choices))
+        and isinstance(out, np.ndarray)
+    ):
+        choices = as_any_arrays(choices)
+        check_out_shape(out, np.broadcast_shapes(a.shape, *[c.shape for c in choices]))
+        _choose_kernel_hetero_cached_parallel(a, choices, out, mode)
+        return out
+
+    if (
+        isinstance(choices, Sequence)
+        and have_same_dtypes(choices)
+        and isinstance(out, np.ndarray)
+    ):
         choices = as_any_arrays(choices)
         shape = np.broadcast_shapes(a.shape, *[c.shape for c in choices])
         check_out_shape(out, shape)
-        if have_same_dtypes(choices):
-            _choose_kernel_homo_cached_parallel(a, choices, out, mode)
-        else:
-            _choose_kernel_hetero_cached_parallel(a, choices, out, mode)
+        _choose_kernel_homo_cached_parallel(a, choices, out, mode)
         return out
 
-    if isinstance(choices, Sequence) and (out is None):
+    if isinstance(choices, Sequence) and have_same_dtypes(choices) and (out is None):
         choices = as_any_arrays(choices)
         shape = np.broadcast_shapes(a.shape, *[c.shape for c in choices])
-        out = np.empty(shape, dtype=np.result_type(*choices))
-        if have_same_dtypes(choices):
-            _choose_kernel_homo_cached_parallel(a, choices, out, mode)
-        else:
-            _choose_kernel_hetero_cached_parallel(a, choices, out, mode)
+        dtype = np.result_type(*[c.dtype for c in choices])
+        out = np.empty(shape, dtype=dtype)
+        _choose_kernel_homo_cached_parallel(a, choices, out, mode)
+        return out
+
+    if (
+        isinstance(choices, Sequence)
+        and (not have_same_dtypes(choices))
+        and (out is None)
+    ):
+        choices = as_any_arrays(choices)
+        shape = np.broadcast_shapes(a.shape, *[c.shape for c in choices])
+        dtype = np.result_type(*[c.dtype for c in choices])
+        out = np.empty(shape, dtype=dtype)
+        _choose_kernel_hetero_cached_parallel(a, choices, out, mode)
         return out
 
     raise TypeError()
@@ -263,10 +295,8 @@ def overload_choose(a, choices, out=None, mode="raise"):
         not all(isinstance(t, nbt.Array) for t in choices.types)
     ):
         raise TypeError()
-    if isinstance(choices, (nbt.List, nbt.ListType)) and (
-        not isinstance(choices.dtype, nbt.Array)
-    ):
-        raise TypeError()
+    if isinstance(choices, (nbt.List, nbt.ListType)):
+        raise NotImplementedError()
 
     if isinstance(choices, nbt.Array) and isinstance(out, nbt.Array):
 
@@ -304,27 +334,6 @@ def overload_choose(a, choices, out=None, mode="raise"):
             shape = broadcast_shape(a, choices)
             out = np.empty(shape, dtype=choices[0].dtype)
             _choose_kernel_homo_inline(a, choices, out, mode)
-            return out
-
-        return impl
-
-    if isinstance(choices, (nbt.List, nbt.ListType)) and isinstance(out, nbt.Array):
-
-        def impl(a, choices, out=None, mode="raise"):
-            choices_tuple = to_tuple(*choices)
-            shape = broadcast_shape(a, choices_tuple)
-            check_out_shape(out, shape)
-            _choose_kernel_homo_inline(a, choices, out, mode)
-            return out
-
-        return impl
-    if isinstance(choices, (nbt.List, nbt.ListType)) and isinstance(out, OMIT_OR_NONE):
-
-        def impl(a, choices, out=None, mode="raise"):
-            choices_tuple = to_tuple(*choices)
-            shape = broadcast_shape(a, choices_tuple)
-            out = np.empty(shape, dtype=choices[0].dtype)
-            _choose_kernel_homo_inline(a, choices_tuple, out, mode)
             return out
 
         return impl

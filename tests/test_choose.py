@@ -55,7 +55,9 @@ class TestChoose:
         np.testing.assert_array_equal(result, expected)
 
     def test_choices_as_ndarray(self):
-        choices = np.array([[0, 1, 2, 3], [10, 11, 12, 13], [20, 21, 22, 23], [30, 31, 32, 33]])
+        choices = np.array(
+            [[0, 1, 2, 3], [10, 11, 12, 13], [20, 21, 22, 23], [30, 31, 32, 33]]
+        )
         a = np.array([2, 3, 1, 0])
 
         expected = np.choose(a, choices)
@@ -192,7 +194,9 @@ class TestChooseInJit:
             return npi.choose(a, choices)
 
         a = np.array([2, 3, 1, 0])
-        choices = np.array([[0, 1, 2, 3], [10, 11, 12, 13], [20, 21, 22, 23], [30, 31, 32, 33]])
+        choices = np.array(
+            [[0, 1, 2, 3], [10, 11, 12, 13], [20, 21, 22, 23], [30, 31, 32, 33]]
+        )
         expected = np.choose(a, choices)
 
         result = jit_func(a, choices)
@@ -208,3 +212,215 @@ class TestChooseInJit:
 
         with pytest.raises(IndexError):
             jit_func(a, choices)
+
+
+class TestChooseRuntimeBranches:
+    """Cover each if-branch in choose()."""
+
+    def test_non_integer_a(self):
+        a = np.array([0.0, 1.0, 0.0])
+        choices = [-10, 10]
+
+        with pytest.raises(TypeError, match="integer"):
+            npi.choose(a, choices)
+
+    def test_choices_ndarray_with_out(self):
+        choices = np.array(
+            [[0, 1, 2, 3], [10, 11, 12, 13], [20, 21, 22, 23], [30, 31, 32, 33]]
+        )
+        a = np.array([2, 3, 1, 0])
+        out = np.empty(4, dtype=int)
+
+        expected = np.choose(a, choices)
+        result = npi.choose(a, choices, out=out)
+
+        np.testing.assert_array_equal(result, expected)
+        np.testing.assert_array_equal(out, expected)
+        assert result is out
+
+    def test_choices_ndarray_without_out(self):
+        choices = np.array(
+            [[0, 1, 2, 3], [10, 11, 12, 13], [20, 21, 22, 23], [30, 31, 32, 33]]
+        )
+        a = np.array([2, 3, 1, 0])
+
+        expected = np.choose(a, choices)
+        result = npi.choose(a, choices)
+
+        np.testing.assert_array_equal(result, expected)
+
+    def test_sequence_homogeneous_with_out(self):
+        choices = [[0, 1, 2], [10, 11, 12]]
+        a = np.array([0, 1, 0])
+        out = np.empty(3, dtype=int)
+
+        expected = np.choose(a, choices)
+        result = npi.choose(a, choices, out=out)
+
+        np.testing.assert_array_equal(result, expected)
+        assert result is out
+
+    def test_sequence_heterogeneous_with_out(self):
+        a = np.array([0, 1, 0])
+        choices = [np.array([1.0, 2.0, 3.0]), np.array([10, 20, 30])]
+        out = np.empty(3, dtype=float)
+
+        expected = np.choose(a, choices)
+        result = npi.choose(a, choices, out=out)
+
+        np.testing.assert_array_equal(result, expected)
+        assert result is out
+
+    def test_sequence_homogeneous_without_out(self):
+        a = np.array([0, 1, 0])
+        choices = [[1, 2, 3], [10, 20, 30]]
+
+        expected = np.choose(a, choices)
+        result = npi.choose(a, choices)
+
+        np.testing.assert_array_equal(result, expected)
+
+    def test_sequence_heterogeneous_without_out(self):
+        a = np.array([0, 1, 0])
+        choices = [np.array([1.0, 2.0, 3.0]), np.array([10, 20, 30])]
+
+        expected = np.choose(a, choices)
+        result = npi.choose(a, choices)
+
+        np.testing.assert_array_equal(result, expected)
+
+    def test_invalid_choices_type(self):
+        a = np.array([0, 1, 0])
+
+        with pytest.raises(TypeError):
+            npi.choose(a, 42)
+
+    def test_invalid_out_type(self):
+        a = np.array([0, 1, 0])
+        choices = [-10, 10]
+
+        with pytest.raises(TypeError):
+            npi.choose(a, choices, out=[0, 0, 0])
+
+
+def _assert_jit_compile_fails(jit_func, *args):
+    with pytest.raises((nb.core.errors.TypingError, TypeError)):
+        jit_func(*args)
+
+
+class TestChooseOverloadBranches:
+    """Cover each if-branch in overload_choose()."""
+
+    def test_jit_non_array_a(self):
+        @nb.njit
+        def jit_func(a, choices):
+            return npi.choose(a, choices)
+
+        _assert_jit_compile_fails(jit_func, 1, (np.array([0]), np.array([1])))
+
+    def test_jit_tuple_non_array_choices(self):
+        @nb.njit
+        def jit_func(a):
+            return npi.choose(a, (1, 2))
+
+        _assert_jit_compile_fails(jit_func, np.array([0, 1, 0]))
+
+    def test_jit_list_non_array_choices(self):
+        @nb.njit
+        def jit_func(a):
+            return npi.choose(a, [1, 2])
+
+        _assert_jit_compile_fails(jit_func, np.array([0, 1, 0]))
+
+    def test_jit_choices_array_with_out(self):
+        @nb.njit
+        def jit_func(a, choices, out):
+            return npi.choose(a, choices, out=out)
+
+        a = np.array([2, 3, 1, 0])
+        choices = np.array(
+            [[0, 1, 2, 3], [10, 11, 12, 13], [20, 21, 22, 23], [30, 31, 32, 33]]
+        )
+        out = np.empty(4, dtype=np.int64)
+        expected = np.choose(a, choices)
+
+        result = jit_func(a, choices, out)
+        np.testing.assert_array_equal(result, expected)
+        np.testing.assert_array_equal(out, expected)
+
+    def test_jit_choices_array_without_out(self):
+        @nb.njit
+        def jit_func(a, choices):
+            return npi.choose(a, choices)
+
+        a = np.array([2, 3, 1, 0])
+        choices = np.array(
+            [[0, 1, 2, 3], [10, 11, 12, 13], [20, 21, 22, 23], [30, 31, 32, 33]]
+        )
+        expected = np.choose(a, choices)
+
+        result = jit_func(a, choices)
+        np.testing.assert_array_equal(result, expected)
+
+    def test_jit_unituple_with_out(self):
+        @nb.njit
+        def jit_func(a, out):
+            c0 = np.array([1, 2, 3])
+            c1 = np.array([10, 20, 30])
+            return npi.choose(a, (c0, c1), out=out)
+
+        a = np.array([0, 1, 0])
+        out = np.empty(3, dtype=np.int64)
+        expected = np.choose(a, (np.array([1, 2, 3]), np.array([10, 20, 30])))
+
+        result = jit_func(a, out)
+        np.testing.assert_array_equal(result, expected)
+        np.testing.assert_array_equal(out, expected)
+
+    def test_jit_unituple_without_out(self):
+        @nb.njit
+        def jit_func(a):
+            c0 = np.array([1, 2, 3])
+            c1 = np.array([10, 20, 30])
+            return npi.choose(a, (c0, c1))
+
+        a = np.array([0, 1, 0])
+        expected = np.choose(a, (np.array([1, 2, 3]), np.array([10, 20, 30])))
+
+        result = jit_func(a)
+        np.testing.assert_array_equal(result, expected)
+
+    def test_jit_tuple_hetero_with_out(self):
+        @nb.njit
+        def jit_func(a, out):
+            c0 = np.array([1.0, 2.0, 3.0])
+            c1 = np.array([10, 20, 30])
+            return npi.choose(a, (c0, c1), out=out)
+
+        a = np.array([0, 1, 0])
+        out = np.empty(3, dtype=np.float64)
+        expected = np.choose(a, (np.array([1.0, 2.0, 3.0]), np.array([10, 20, 30])))
+
+        result = jit_func(a, out)
+        np.testing.assert_array_equal(result, expected)
+        np.testing.assert_array_equal(out, expected)
+
+    def test_jit_tuple_hetero_without_out(self):
+        @nb.njit
+        def jit_func(a):
+            c0 = np.array([1.0, 2.0, 3.0])
+            c1 = np.array([10, 20, 30])
+            return npi.choose(a, (c0, c1))
+
+        a = np.array([0, 1, 0])
+        expected = np.choose(a, (np.array([1.0, 2.0, 3.0]), np.array([10, 20, 30])))
+
+        result = jit_func(a)
+        np.testing.assert_array_equal(result, expected)
+
+    def test_jit_invalid_choices_type(self):
+        @nb.njit
+        def jit_func(a):
+            return npi.choose(a, 3)
+
+        _assert_jit_compile_fails(jit_func, np.array([0, 1, 0]))
