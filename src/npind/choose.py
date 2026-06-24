@@ -232,45 +232,25 @@ def choose(
         _choose_kernel_array_cached_parallel(a, choices, out, mode)
         return out
 
-    if (
-        isinstance(choices, Sequence)
-        and (not have_same_dtypes(choices))
-        and isinstance(out, np.ndarray)
-    ):
-        choices = as_any_arrays(choices)
-        check_out_shape(out, np.broadcast_shapes(a.shape, *[c.shape for c in choices]))
-        _choose_kernel_hetero_cached_parallel(a, choices, out, mode)
-        return out
-
-    if (
-        isinstance(choices, Sequence)
-        and have_same_dtypes(choices)
-        and isinstance(out, np.ndarray)
-    ):
+    if isinstance(choices, Sequence) and isinstance(out, np.ndarray):
         choices = as_any_arrays(choices)
         shape = np.broadcast_shapes(a.shape, *[c.shape for c in choices])
         check_out_shape(out, shape)
-        _choose_kernel_homo_cached_parallel(a, choices, out, mode)
+        if have_same_dtypes(choices):
+            _choose_kernel_homo_cached_parallel(a, choices, out, mode)
+        else:
+            _choose_kernel_hetero_cached_parallel(a, choices, out, mode)
         return out
 
-    if isinstance(choices, Sequence) and have_same_dtypes(choices) and (out is None):
+    if isinstance(choices, Sequence) and (out is None):
         choices = as_any_arrays(choices)
         shape = np.broadcast_shapes(a.shape, *[c.shape for c in choices])
         dtype = np.result_type(*[c.dtype for c in choices])
         out = np.empty(shape, dtype=dtype)
-        _choose_kernel_homo_cached_parallel(a, choices, out, mode)
-        return out
-
-    if (
-        isinstance(choices, Sequence)
-        and (not have_same_dtypes(choices))
-        and (out is None)
-    ):
-        choices = as_any_arrays(choices)
-        shape = np.broadcast_shapes(a.shape, *[c.shape for c in choices])
-        dtype = np.result_type(*[c.dtype for c in choices])
-        out = np.empty(shape, dtype=dtype)
-        _choose_kernel_hetero_cached_parallel(a, choices, out, mode)
+        if have_same_dtypes(choices):
+            _choose_kernel_homo_cached_parallel(a, choices, out, mode)
+        else:
+            _choose_kernel_hetero_cached_parallel(a, choices, out, mode)
         return out
 
     raise TypeError()

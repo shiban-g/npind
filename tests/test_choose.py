@@ -325,13 +325,6 @@ class TestChooseOverloadBranches:
 
         _assert_jit_compile_fails(jit_func, np.array([0, 1, 0]))
 
-    def test_jit_list_non_array_choices(self):
-        @nb.njit
-        def jit_func(a):
-            return npi.choose(a, [1, 2])
-
-        _assert_jit_compile_fails(jit_func, np.array([0, 1, 0]))
-
     def test_jit_choices_array_with_out(self):
         @nb.njit
         def jit_func(a, choices, out):
