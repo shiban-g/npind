@@ -1,11 +1,41 @@
 from types import NoneType
 
 import numba as nb
+import numpy as np
 import numpy.typing as npt
+from numba import literal_unroll
 from numba import types as nbt
 from numba.extending import register_jitable
 
 OMIT_OR_NONE = (nbt.Omitted, nbt.NoneType, NoneType)
+
+
+@nb.njit
+def broadcast_shapes(arrays: tuple[npt.NDArray, ...]):
+    shape = arrays[0].shape
+    for array in literal_unroll(arrays):
+        shape = np.broadcast_shapes(shape, array.shape)
+    return shape
+
+
+@register_jitable(nopython=True)
+def broadcast_arrays(
+    arrays: tuple[npt.NDArray, ...], shape: tuple[int, ...]
+) -> tuple[npt.NDArray, ...]:
+    head = (np.broadcast_to(arrays[0], shape),)
+    if len(arrays) == 1:
+        return head
+
+    tail = broadcast_arrays(arrays[1:], shape)
+    return head + tail
+
+
+@nb.njit
+def may_share_memories(arrays: tuple[npt.NDArray, ...], target: npt.NDArray):
+    result = True
+    for array in literal_unroll(arrays):
+        result |= may_share_memory(array, target)
+    return result
 
 
 @register_jitable(nopython=True)
@@ -21,10 +51,17 @@ def check_out_shape(array: npt.NDArray, shape: tuple):
 
 
 @nb.njit(inline="always")
-def raise_if_outside(index: int, bound: int) -> int:
-    if 0 <= index < bound:
-        return index
-    raise IndexError("indices are out of bounds")
+def raise_if_outside(indices: npt.NDArray, bound: int):
+    # Errors cannot be raised within a parallel loop.
+    # Therefore, the input and output differ from those of `raise_if_outside` and `wrap_if_outside`.
+    min_ = max_ = indices.flat[0]
+    for idx in nb.pndindex(indices.shape):
+        v = indices[idx]
+        min_ = min(v, min_)
+        max_ = max(v, max_)
+
+    if not (0 <= min_ <= max_ < bound):
+        raise IndexError("indices are out of bounds")
 
 
 @nb.njit(inline="always")
@@ -57,7 +94,7 @@ def may_share_memory(a: npt.NDArray, b: npt.NDArray) -> bool:
 @register_jitable(nopython=True)
 def modify_axis(axis, ndim):
     if not (-ndim <= axis < ndim):
-        raise ValueError(f"axis {axis} is out of bounds for array of dimension {ndim}")
+        raise ValueError("axis is out of bounds for array of dimension")
     if axis < 0:
         axis += ndim
     return axis
@@ -91,6 +128,21 @@ def replace_item_with_tuple(target_tuple, replacement_tuple, index):
     temp_result = replacement_tuple + rotated_tuple[1:]
     result = rotate_right(temp_result, index)
     return result
+
+
+@register_jitable(nopython=True)
+def axes_to_left(a: npt.NDArray, start: int, end: int) -> npt.NDArray:
+    if not (0 <= start < end <= a.ndim):
+        raise ValueError("axis is out of bounds for array of dimension")
+
+    axes = a.shape
+    for i in range(start, end):
+        axes = axes[1:] + (i,)
+    for i in range(0, start):
+        axes = axes[1:] + (i,)
+    for i in range(end, a.ndim):
+        axes = axes[1:] + (i,)
+    return a.transpose(axes)
 
 
 @register_jitable(nopython=True)

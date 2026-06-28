@@ -8,42 +8,181 @@ from numpy import typing as npt
 
 from .utils import (
     OMIT_OR_NONE,
+    axes_to_left,
     check_clipmode,
     check_out_shape,
     clip_if_outside,
     may_share_memory,
     raise_if_outside,
     replace_item_with_tuple,
-    rollaxis,
     wrap_if_outside,
 )
+
+
+def _create_out_array(
+    a: npt.NDArray,
+    indices: npt.NDArray,
+    axis: Optional[int],
+    out: Optional[npt.NDArray],
+):
+    if axis is None and isinstance(out, np.ndarray):
+        check_out_shape(out, indices.shape)
+        return out
+
+    if axis is None and (out is None):
+        return np.empty(indices.shape, dtype=a.dtype)
+
+    if isinstance(axis, SupportsIndex) and isinstance(out, np.ndarray):
+        expected_shape = replace_item_with_tuple(a.shape, indices.shape, axis)
+        check_out_shape(out, expected_shape)
+        return out
+
+    if isinstance(axis, SupportsIndex) and (out is None):
+        result_shape = replace_item_with_tuple(a.shape, indices.shape, axis)
+        return np.empty(result_shape, dtype=a.dtype)
+
+    raise TypeError()
+
+
+@overload(_create_out_array)
+def overload_create_out_array(a, indices, axis, out):
+    if isinstance(axis, OMIT_OR_NONE) and isinstance(out, nbt.Array):
+
+        def impl(a, indices, axis, out):
+            check_out_shape(out, indices.shape)
+            return out
+
+        return impl
+
+    if isinstance(axis, OMIT_OR_NONE) and isinstance(out, OMIT_OR_NONE):
+
+        def impl(a, indices, axis, out):
+            return np.empty(indices.shape, dtype=a.dtype)
+
+        return impl
+
+    if isinstance(axis, nbt.Integer) and isinstance(out, nbt.Array):
+
+        def impl(a, indices, axis, out):
+            expected_shape = replace_item_with_tuple(a.shape, indices.shape, axis)
+            check_out_shape(out, expected_shape)
+            return out
+
+        return impl
+
+    if isinstance(axis, nbt.Integer) and isinstance(out, OMIT_OR_NONE):
+
+        def impl(a, indices, axis, out):
+            result_shape = replace_item_with_tuple(a.shape, indices.shape, axis)
+            return np.empty(result_shape, dtype=a.dtype)
+
+        return impl
+
+    raise TypeError()
+
+
+def _loop_inside(
+    a: npt.NDArray,
+    out_buf: npt.NDArray,
+    src_idx: int,
+    arr_idx: tuple[int, ...],
+    axis: Optional[int] = None,
+):
+    # Here is unreachable.
+    # this method is required to define `overload_loop_inside`.
+    raise NotImplementedError()
+
+
+# `@nb.njit(inline="always")` cause an error.
+# `inline="always"` is required for performance reasons.
+@overload(_loop_inside, inline="always")
+def overload_loop_inside(a, out_buf, src_idx, arr_idx, axis=None):
+
+    if isinstance(axis, OMIT_OR_NONE) and (a.layout == "C"):
+
+        def impl(a, out_buf, src_idx, arr_idx, axis=None):
+            out_buf[arr_idx] = a[src_idx]
+
+        return impl
+
+    if isinstance(axis, OMIT_OR_NONE) and (a.layout != "C"):
+
+        def impl(a, out_buf, src_idx, arr_idx, axis=None):
+            out_buf[arr_idx] = a.flat[src_idx]
+
+        return impl
+
+    if isinstance(axis, nbt.Integer):
+
+        def impl(a, out_buf, src_idx, arr_idx, axis=None):
+            out_buf[arr_idx] = a[src_idx]
+
+        return impl
+
+    raise NotImplementedError()
+
+
+def _prepare(
+    a: npt.NDArray, indices: npt.NDArray, axis: Optional[int], out: npt.NDArray
+):
+    raise NotImplementedError()
+
+
+@overload(_prepare)
+def overload_prepare(a, indices, axis, out):
+    if isinstance(axis, OMIT_OR_NONE) and (a.layout == "C"):
+
+        def impl(a, indices, axis, out):
+            bound = a.size
+            a = a.ravel()
+            return a, out, bound
+
+        return impl
+
+    if isinstance(axis, OMIT_OR_NONE) and (a.layout != "C"):
+
+        def impl(a, indices, axis, out):
+            bound = a.size
+            return a, out, bound
+
+        return impl
+
+    if isinstance(axis, nbt.Integer):
+
+        def impl(a, indices, axis, out):
+            a = axes_to_left(a, axis, axis + 1)
+            out = axes_to_left(out, axis, axis + indices.ndim)
+            bound = len(a)
+            return a, out, bound
+
+        return impl
+
+    raise NotImplementedError()
 
 
 def _take_kernel(a, indices, axis, out, mode):
     check_clipmode(mode)
 
-    a = rollaxis(a, axis)
-    out = rollaxis(out, axis)
+    b, out, bound = _prepare(a, indices, axis, out)
 
     out_buf = out
-    if may_share_memory(a, out) or may_share_memory(indices, out):
+    if may_share_memory(b, out) or may_share_memory(indices, out):
         out_buf = np.empty_like(out)
 
-    bound = len(a)
     if mode == "raise":
+        raise_if_outside(indices, bound)
         for idx in nb.pndindex(indices.shape):
-            i = raise_if_outside(indices[idx], bound)
-            out_buf[idx] = a[i]
+            _loop_inside(b, out_buf, indices[idx], idx, axis)
 
     if mode == "wrap":
         for idx in nb.pndindex(indices.shape):
             i = wrap_if_outside(indices[idx], bound)
-            out_buf[idx] = a[i]
+            _loop_inside(b, out_buf, i, idx, axis)
 
     if mode == "clip":
         for idx in nb.pndindex(indices.shape):
             i = clip_if_outside(indices[idx], bound)
-            out_buf[idx] = a[i]
+            _loop_inside(b, out_buf, i, idx, axis)
 
     if out is not out_buf:
         out[...] = out_buf
@@ -52,75 +191,6 @@ def _take_kernel(a, indices, axis, out, mode):
 _take_kernel_inline = nb.njit(_take_kernel, boundscheck=False, inline="always")
 _take_kernel_cached_parallel = nb.njit(
     _take_kernel, boundscheck=False, cache=True, parallel=True
-)
-
-
-def _take_kernel_1d_noncontiguous(a, indices, out, mode):
-    check_clipmode(mode)
-
-    out_buf = out
-    if may_share_memory(a, out) or may_share_memory(indices, out):
-        out_buf = np.empty_like(out)
-
-    bound = a.size
-    if mode == "raise":
-        for idx in nb.pndindex(indices.shape):
-            i = raise_if_outside(indices[idx], bound)
-            out_buf[idx] = a.flat[i]
-
-    if mode == "wrap":
-        for idx in nb.pndindex(indices.shape):
-            i = wrap_if_outside(indices[idx], bound)
-            out_buf[idx] = a.flat[i]
-
-    if mode == "clip":
-        for idx in nb.pndindex(indices.shape):
-            i = clip_if_outside(a[idx], bound)
-            out_buf[idx] = a.flat[i]
-
-    if out is not out_buf:
-        out[...] = out_buf
-
-
-def _take_kernel_1d_contiguous(a, indices, out, mode):
-    check_clipmode(mode)
-
-    out_buf = out
-    if may_share_memory(a, out) or may_share_memory(indices, out):
-        out_buf = np.empty_like(out)
-
-    bound = a.size
-    b = a.ravel()
-    if mode == "raise":
-        for idx in nb.pndindex(indices.shape):
-            i = raise_if_outside(indices[idx], bound)
-            out_buf[idx] = b[i]
-
-    if mode == "wrap":
-        for idx in nb.pndindex(indices.shape):
-            i = wrap_if_outside(indices[idx], bound)
-            out_buf[idx] = b[i]
-
-    if mode == "clip":
-        for idx in nb.pndindex(indices.shape):
-            i = clip_if_outside(a[idx], bound)
-            out_buf[idx] = b[i]
-
-    if out is not out_buf:
-        out[...] = out_buf
-
-
-_take_kernel_1d_contiguous_inline = nb.njit(
-    _take_kernel_1d_contiguous, boundscheck=False, inline="always"
-)
-_take_kernel_1d_contiguous_cached_parallel = nb.njit(
-    _take_kernel_1d_contiguous, boundscheck=False, cache=True, parallel=True
-)
-_take_kernel_1d_noncontiguous_inline = nb.njit(
-    _take_kernel_1d_noncontiguous, boundscheck=False, inline="always"
-)
-_take_kernel_1d_noncontiguous_cached_parallel = nb.njit(
-    _take_kernel_1d_noncontiguous, boundscheck=False, cache=True, parallel=True
 )
 
 
@@ -188,35 +258,10 @@ def take(
     if not np.issubdtype(indices.dtype, np.integer):
         raise TypeError(f"{indices.dtype=} must be subdtype of np.integer")
 
-    if (axis is None) and (out is None) and a.flags.c_contiguous:
-        out = np.empty(indices.shape, dtype=a.dtype)
-        _take_kernel_1d_contiguous_cached_parallel(a, indices, out, mode)
-        return out
-
-    if (axis is None) and (out is None) and (not a.flags.c_contiguous):
-        out = np.empty(indices.shape, dtype=a.dtype)
-        _take_kernel_1d_noncontiguous_cached_parallel(a, indices, out, mode)
-        return out
-
-    if (axis is None) and isinstance(out, np.ndarray) and a.flags.c_contiguous:
-        check_out_shape(out, indices.shape)
-        _take_kernel_1d_contiguous_cached_parallel(a, indices, out, mode)
-        return out
-
-    if (axis is None) and isinstance(out, np.ndarray) and (not a.flags.c_contiguous):
-        check_out_shape(out, indices.shape)
-        _take_kernel_1d_noncontiguous_cached_parallel(a, indices, out, mode)
-        return out
-
-    if isinstance(axis, SupportsIndex) and (out is None):
-        result_shape = replace_item_with_tuple(a.shape, indices.shape, axis)
-        out = np.empty(result_shape, dtype=a.dtype)
-        _take_kernel_cached_parallel(a, indices, axis, out, mode)
-        return out
-
-    if isinstance(axis, SupportsIndex) and isinstance(out, np.ndarray):
-        expected_shape = replace_item_with_tuple(a.shape, indices.shape, axis)
-        check_out_shape(out, expected_shape)
+    if (isinstance(out, np.ndarray) or out is None) and (
+        axis is None or isinstance(axis, SupportsIndex)
+    ):
+        out = _create_out_array(a, indices, axis, out)
         _take_kernel_cached_parallel(a, indices, axis, out, mode)
         return out
 
@@ -237,75 +282,14 @@ def overload_take(a, indices, axis=None, out=None, mode="raise"):
     if not isinstance(indices, nbt.Array):
         raise TypeError(f"{type(indices).__name__=} must be Array")
 
-    if (
-        isinstance(axis, OMIT_OR_NONE)
-        and isinstance(out, OMIT_OR_NONE)
-        and (a.layout == "C")
+    if isinstance(axis, (nbt.Integer,) + OMIT_OR_NONE) and isinstance(
+        out, (nbt.Array,) + OMIT_OR_NONE
     ):
 
         def impl(a, indices, axis=None, out=None, mode="raise"):
-            out = np.empty(indices.shape, dtype=a.dtype)
-            _take_kernel_1d_contiguous_inline(a, indices, out, mode)
-            return out
-
-        return impl
-
-    if (
-        isinstance(axis, OMIT_OR_NONE)
-        and isinstance(out, OMIT_OR_NONE)
-        and (a.layout != "C")
-    ):
-
-        def impl(a, indices, axis=None, out=None, mode="raise"):
-            out = np.empty(indices.shape, dtype=a.dtype)
-            _take_kernel_1d_noncontiguous_inline(a, indices, out, mode)
-            return out
-
-        return impl
-
-    if (
-        isinstance(axis, OMIT_OR_NONE)
-        and isinstance(out, nbt.Array)
-        and (a.layout == "C")
-    ):
-
-        def impl(a, indices, axis=None, out=None, mode="raise"):
-            check_out_shape(out, indices.shape)
-            _take_kernel_1d_contiguous_inline(a, indices, out, mode)
-            return out
-
-        return impl
-
-    if (
-        isinstance(axis, OMIT_OR_NONE)
-        and isinstance(out, nbt.Array)
-        and (a.layout != "C")
-    ):
-
-        def impl(a, indices, axis=None, out=None, mode="raise"):
-            check_out_shape(out, indices.shape)
-            _take_kernel_1d_noncontiguous_inline(a, indices, out, mode)
-            return out
-
-        return impl
-
-    if isinstance(axis, nbt.Integer) and isinstance(out, OMIT_OR_NONE):
-
-        def impl(a, indices, axis=None, out=None, mode="raise"):
-            result_shape = replace_item_with_tuple(a.shape, indices.shape, axis)
-            out = np.empty(result_shape, dtype=a.dtype)
-            _take_kernel_inline(a, indices, axis, out, mode)
-            return out
-
-        return impl
-
-    if isinstance(axis, nbt.Integer) and isinstance(out, nbt.Array):
-
-        def impl(a, indices, axis=None, out=None, mode="raise"):
-            expected_shape = replace_item_with_tuple(a.shape, indices.shape, axis)
-            check_out_shape(out, expected_shape)
-            _take_kernel_inline(a, indices, axis, out, mode)
-            return out
+            out_ = _create_out_array(a, indices, axis, out)
+            _take_kernel_inline(a, indices, axis, out_, mode)
+            return out_
 
         return impl
     raise TypeError(
